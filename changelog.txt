@@ -1,4 +1,4 @@
-vrem 0.1.3:
+vrel 0.1.3:
 	- Added basic support for "Expect: 100-continue" header
 	- Added POST data size limitation
 	- Added newlines at the end of error responses
