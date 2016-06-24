@@ -1,3 +1,8 @@
+vrel 0.1.4:
+	- Now stores the sender's IP
+	- Pastes are detroyed with "burn on read" only if the request comes from a different IP
+	- When sending a paste from the web interface, automatically redirects to the syntax colored paste page
+	- POST /p/ lifetime arg is now in seconds instead of hours
 vrel 0.1.3:
 	- Added basic support for "Expect: 100-continue" header
 	- Added POST data size limitation

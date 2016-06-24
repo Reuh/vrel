@@ -1,5 +1,5 @@
 #!/bin/lua
---- vrel v0.1.3: online paste service, in 256 lines of Lua (max line lenght = 256 but we shouldn't go this far if not needed).
+--- vrel v0.1.4: online paste service, in 256 lines of Lua (max line lenght = 256 but we shouldn't go this far if not needed).
 -- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting.
 -- If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
 -- Basic HTTP server --
@@ -67,18 +67,15 @@ httpd = {
 	start = function(address, port, pages, errorPages, options)
 		options = options or { debug = false, timeout = 1 }
 		-- Start server
-		local socket = require("socket")
-		local url = require("socket.url")
-		local server = socket.bind(address, port)
+		local socket, url = require("socket"), require("socket.url")
+		local server, running = socket.bind(address, port), true
 		httpd.log("HTTP server started on %s", ("%s:%s"):format(server:getsockname()))
-		local running = true
 		-- Debug mode
 		if options.debug then
 			httpd.log("Debug mode enabled")
 			server:settimeout(1) -- Enable timeout (don't block forever so we can run debug code)
 			-- Warp the server object so we can rewrite its functions
-			local realServer = server
-			server = setmetatable({}, {__index = function(t, k) return function(_, ...) return realServer[k](realServer, ...) end end})
+			local realServer, server = server, setmetatable({}, {__index = function(t, k) return function(_, ...) return realServer[k](realServer, ...) end end})
 			-- Reload file on change
 			local lfs = require("lfs")
 			local lastModification = lfs.attributes(arg[0]).modification -- current last modification time
@@ -134,20 +131,20 @@ httpd = {
 }
 -- Vrel --
 -- Load data
-local data = {} -- { ["name"] = { expire = os.time()+lifetime, burnOnRead = false, data = "Hello\nWorld" } }
+local data = {} -- { ["name"] = { expire = os.time()+lifetime, burnOnRead = false, senderIp = "0.0.0.0", data = "Hello\nWorld" } }
 local sqliteAvailable, sqlite3 = pcall(require, "lsqlite3")
 if sqliteAvailable then httpd.log("Using SQlite3 storage backend") -- SQlite backend
 	local db = sqlite3.open("database.sqlite3")
-	db:exec("CREATE TABLE IF NOT EXISTS data (name STRING PRIMARY KEY NOT NULL, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL, data STRING NOT NULL)")
+	db:exec("CREATE TABLE IF NOT EXISTS data (name STRING PRIMARY KEY NOT NULL, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL, senderIp STRING NOT NULL, data STRING NOT NULL)")
 	setmetatable(data, {
 		__index = function(self, key) -- data[name]: get paste { expire = integer, burnOnRead = boolean, data = string }
-			local stmt = db:prepare("SELECT expire, burnOnRead, data FROM data WHERE name = ?") stmt:bind_values(key)
+			local stmt = db:prepare("SELECT expire, burnOnRead, senderIp, data FROM data WHERE name = ?") stmt:bind_values(key)
 			local r for row in stmt:nrows() do r = row r.burnOnRead = r.burnOnRead == 1 break end stmt:finalize()
 			return r
 		end,
 		__newindex = function(self, key, value)
 			if value ~= nil then -- data[name] = { expire = integer, burnOnRead = boolean, data = string }: add paste
-				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.data)
+				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderIp, value.data)
 				stmt:step() stmt:finalize()
 			else -- data[name] = nil: delete paste
 				local stmt = db:prepare("DELETE FROM data WHERE name = ?") stmt:bind_values(key)
@@ -185,19 +182,20 @@ local function clean() -- clean the database each cleanInterval
 		lastClean = time
 	end
 end
-local function get(name) clean() -- get a paste (returns nil if non-existent) (returned data is expected to be safe)
+local function get(name, request) clean() -- get a paste (returns nil if non-existent) (returned data is expected to be safe)
 	if data[name] then
 		local d = data[name]
 		if d.expire < os.time() then data[name] = nil return end
-		if d.burnOnRead then data[name] = nil end
+		if request.client:getpeername() ~= d.senderIp and d.burnOnRead then data[name] = nil end
 		return d
 	end
 end
-local function post(paste) clean() -- add a paste, will check data and auto-fill defaults; returns name, data table
+local function post(paste, request) clean() -- add a paste, will check data and auto-fill defaults; returns name, data table
 	local name = generateName()
 	if paste.lifetime then paste.expire = os.time() + (tonumber(paste.lifetime) or defaultLifetime) end
 	paste.expire = math.min(tonumber(paste.expire) or os.time()+defaultLifetime, os.time()+maxLifetime)
 	paste.burnOnRead = paste.burnOnRead == true
+	paste.senderIp = paste.senderIp or request.client:getpeername() or "0.0.0.0"
 	paste.data = tostring(paste.data)
 	data[name] = paste
 	return name, data[name]
@@ -208,7 +206,7 @@ local function highlight(code, lexer) -- Syntax highlighting; should returns the
 	source:write(code) source:close()
 	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..lexer.." pygmentize.tmp", "r"))
 	local out = assert(pygments:read("*a")) pygments:close()
-	if #out > 0 then -- if pygments available (returned something)
+	if #out > 0 then -- if pygments available and available lexer (returned something)
 		local style = assert(io.popen("pygmentize -f html -S "..pygmentsStyle, "r")) -- get style data
 		out = out.."<style>"..extraStyle..assert(style:read("*a")).."</style>" style:close()
 		return out
@@ -219,8 +217,11 @@ end
 httpd.start("*", 8155, { -- Pages
 	["/([^/]*)"] = function(request, name)
 		if forbiddenName[name] then return end
-		return { "200 OK", {["Content-Type"] = "text/html"},
-[[<!DOCTYPE html>
+		if request.method == "POST" and request.post.data then
+			local name = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime/3600)*3600, burnOnRead = request.post.burnOnRead == "on", data = request.post.data }, request)
+			return { "303 See Other", {["Location"] = "/"..name}, "" }
+		end
+		return { "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><title>vrel</title></head>
 <body>]]..(#name == 0 and [[
 	<style>
@@ -235,18 +236,17 @@ httpd.start("*", 8155, { -- Pages
 		#topbar input[type=submit] { cursor: pointer; width: 10em; }
 		#topbar #vrel { font-size: 1.5em; float: right; }
 	</style>
-	<form method="POST" action="/p">
+	<form method="POST" action="/">
 		<div id="topbar"><span id="controls">expires in <input name="lifetime" type="number" min="1" max="]]..math.floor(maxLifetime/3600)..[[" value="]]..math.floor(defaultLifetime/3600)..
 		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
 		<textarea name="data" required=true></textarea>
-	</form>]] or highlight((get(name) or {data="paste not found"}).data, "lua"))..[[
-</body></html>]]
-		}
+	</form>]] or highlight((get(name:match("^[^.]+"), request) or {data="paste not found"}).data, name:match("%.(.+)$") or "lua"))..[[
+</body></html>]] }
 	end,
-	["/g/(.+)"] = function(request, name) local d = get(name) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
+	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
 	["/p"] = function(request)
 		if request.method == "POST" and request.post.data then
-			local name, data = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime/3600)*3600, burnOnRead = request.post.burnOnRead == "on", data = request.post.data })
+			local name, data = post({ lifetime = tonumber(request.post.lifetime) or defaultLifetime, burnOnRead = request.post.burnOnRead == "on", data = request.post.data }, request)
 			return { "200 OK", {["Content-Type"] = "text/json"}, "{\"name\":\""..name.."\",\"lifetime\":"..data.expire-os.time()..",\"burnOnRead\":"..tostring(data.burnOnRead).."}\n" }
 		end
 	end
