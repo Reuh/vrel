@@ -2,7 +2,7 @@
 --- vrel v0.1.5: online paste service, in 256 lines of Lua (max line lenght = 256 but we shouldn't go this far if not needed).
 -- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting.
 -- If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
-local config = pcall(dofile, "config.lua") or {}
+local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
 -- Basic HTTP server --
 local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 15728640 -- max post/paste data size (bytes) (15MB)
 httpd = {
