@@ -242,7 +242,7 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 		<div id="topbar"><span id="controls">expires in <input name="lifetime" type="number" min="1" max="]]..math.floor(maxLifetime/3600)..[[" value="]]..math.floor(defaultLifetime/3600)..
 		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
 		<textarea name="data" required=true></textarea>
-	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found"}, name:match("%.([a-zA-Z]+)$"):lower()))..[[
+	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found"}, name:lower():match("%.([a-z]+)$")))..[[
 </body></html>]] }
 	end,
 	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
