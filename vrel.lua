@@ -132,20 +132,20 @@ httpd = {
 }
 -- Vrel --
 -- Load data
-local data = {} -- { ["name"] = { expire = os.time()+lifetime, burnOnRead = false, senderId = "someuniqueidentifier", data = "Hello\nWorld" } }
+local data = {} -- { ["name"] = { expire = os.time()+lifetime, burnOnRead = false, senderId = "someuniqueidentifier", syntax = "lua", data = "Hello\nWorld" } }
 local sqliteAvailable, sqlite3 = pcall(require, "lsqlite3")
 if sqliteAvailable then httpd.log("Using SQlite3 storage backend") -- SQlite backend
 	local db = sqlite3.open("database.sqlite3")
-	db:exec("CREATE TABLE IF NOT EXISTS data (name STRING PRIMARY KEY NOT NULL, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL, senderId STRING NOT NULL, data STRING NOT NULL)")
+	db:exec("CREATE TABLE IF NOT EXISTS data (name STRING PRIMARY KEY NOT NULL UNIQUE, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL DEFAULT 0, senderId STRING NOT NULL, syntax STRING NOT NULL DEFAULT 'text', data STRING NOT NULL)")
 	setmetatable(data, {
 		__index = function(self, key) -- data[name]: get paste { expire = integer, burnOnRead = boolean, data = string }
-			local stmt = db:prepare("SELECT expire, burnOnRead, senderId, data FROM data WHERE name = ?") stmt:bind_values(key)
+			local stmt = db:prepare("SELECT expire, burnOnRead, senderId, syntax, data FROM data WHERE name = ?") stmt:bind_values(key)
 			local r for row in stmt:nrows() do r = row r.burnOnRead = r.burnOnRead == 1 break end stmt:finalize()
 			return r
 		end,
 		__newindex = function(self, key, value)
-			if value ~= nil then -- data[name] = { expire = integer, burnOnRead = boolean, data = string }: add paste
-				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.data)
+			if value ~= nil then -- data[name] = { expire = integer, burnOnRead = boolean, syntax = string, data = string }: add paste
+				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.syntax, value.data)
 				stmt:step() stmt:finalize()
 			else -- data[name] = nil: delete paste
 				local stmt = db:prepare("DELETE FROM data WHERE name = ?") stmt:bind_values(key)
@@ -197,22 +197,23 @@ local function post(paste, request) clean() -- add a paste, will check data and 
 	paste.expire = math.min(tonumber(paste.expire) or os.time()+defaultLifetime, os.time()+maxLifetime)
 	paste.burnOnRead = paste.burnOnRead == true
 	paste.senderId = paste.senderId or request.client:getpeername() or "0.0.0.0"
+	paste.syntax = (paste.syntax or "text"):lower():match("[a-z]*")
 	paste.data = tostring(paste.data)
 	data[name] = paste
 	return name, data[name]
 end
 local pygmentsStyle, extraStyle = "monokai", "*{color:#F8F8F2;background-color:#272822;margin:0px;}pre{color:#8D8D8A;}" -- pygments style name, extra css for highlighted blocks (also aply if no pygments)
-local function highlight(code, lexer) -- Syntax highlighting; should returns the code block, style and everything included
+local function highlight(paste, forceLexer) -- Syntax highlighting; should returns the code block, style and everything included
 	local source = assert(io.open("pygmentize.tmp", "w")) -- Lua can't at the same time write an read from a command, so we need to put one in a file
-	source:write(code) source:close()
-	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..lexer.." pygmentize.tmp", "r"))
+	source:write(paste.data) source:close()
+	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..(forceLexer or paste.syntax).." pygmentize.tmp", "r"))
 	local out = assert(pygments:read("*a")) pygments:close()
 	if #out > 0 then -- if pygments available and available lexer (returned something)
 		local style = assert(io.popen("pygmentize -f html -S "..pygmentsStyle, "r")) -- get style data
 		out = out.."<style>"..extraStyle..assert(style:read("*a")).."</style>" style:close()
 		return out
 	-- no highlighter available, put in <pre><code> and escape
-	else return "<style>"..extraStyle.."</style><pre><code>"..code:gsub("([\"&<>])",{["\""]="&quot;",["&"]="&amp;",["<"]="&lt;",[">"]="&gt;"}).."</code></pre>" end
+	else return "<style>"..extraStyle.."</style><pre><code>"..paste.data:gsub("([\"&<>])",{["\""]="&quot;",["&"]="&amp;",["<"]="&lt;",[">"]="&gt;"}).."</code></pre>" end
 end
 -- Start!
 httpd.start(config.address or "*", config.port or 8155, { -- Pages
@@ -241,7 +242,7 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 		<div id="topbar"><span id="controls">expires in <input name="lifetime" type="number" min="1" max="]]..math.floor(maxLifetime/3600)..[[" value="]]..math.floor(defaultLifetime/3600)..
 		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
 		<textarea name="data" required=true></textarea>
-	</form>]] or highlight((get(name:match("^[^.]+"), request) or {data="paste not found"}).data, name:match("%.(.+)$") or "lua"))..[[
+	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found"}, name:match("%.([a-zA-Z]+)$"):lower()))..[[
 </body></html>]] }
 	end,
 	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
