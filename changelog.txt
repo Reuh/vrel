@@ -1,3 +1,7 @@
+vrel 0.1.5 (wip):
+	- Doubled the default maximum lifetime (3 months -> 6 months).
+	- Added an optional configuration file.
+	- Various luacheck cleaning (a few potential bugs are fixed). It's still complaining about legit things tho.
 vrel 0.1.4:
 	- Now stores the sender's IP
 	- Pastes are detroyed with "burn on read" only if the request comes from a different IP
