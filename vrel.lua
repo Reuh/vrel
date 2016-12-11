@@ -1,7 +1,7 @@
 #!/bin/lua
 --- vrel v0.1.5: online paste service, in 256 lines of Lua (max line lenght = 256 but we shouldn't go this far if not needed).
--- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting.
--- If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
+-- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting. If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
+math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
 -- Basic HTTP server --
 local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 15728640 -- max post/paste data size (bytes) (15MB)
@@ -28,9 +28,8 @@ httpd = {
 			post = {}, -- POST args {argName=argValue,...} (strings)
 			get = {} -- GET args {argName=argValue,...} (strings)
 		}
-		-- Get headers data from socket
-		local lines = {}
-		repeat
+		local lines = {} -- Headers
+		repeat -- Get headers data from socket
 			local message = client:receive("*l")
 			table.insert(lines, message)
 		until not message or #message == 0
@@ -174,6 +173,7 @@ local function generateName(size) -- generate a paste name. If size ~= nil, will
 	until (not size and not (data[name] or forbiddenName[name])) or (#name >= (size or math.huge))
 	return name
 end
+local function getClientId(request)	return request.headers["X-Forwarded-For"] or request.client:getpeername() end -- returns some identifier for the client who sent the request
 local lastClean, cleanInterval = os.time(), config.cleanInterval or 1800 -- last clean time (all time are stored in seconds) and clean interval (30min)
 local maxLifetime, defaultLifetime = config.maxLifetime or 15552000, config.defaultLifetime or 86400 -- maximum lifetime of a paste (6 month) and default (1 day)
 local function clean() -- clean the database each cleanInterval
@@ -187,7 +187,7 @@ local function get(name, request) clean() -- get a paste (returns nil if non-exi
 	if data[name] then
 		local d = data[name]
 		if d.expire < os.time() then data[name] = nil return end
-		if request.client:getpeername() ~= d.senderId and d.burnOnRead then data[name] = nil end -- burn on read (except if retrieved by original poster)
+		if getClientId(request) ~= d.senderId and d.burnOnRead then data[name] = nil end -- burn on read (except if retrieved by original poster)
 		return d
 	end
 end
@@ -196,13 +196,13 @@ local function post(paste, request) clean() -- add a paste, will check data and 
 	if paste.lifetime then paste.expire = os.time() + (tonumber(paste.lifetime) or defaultLifetime) end
 	paste.expire = math.min(tonumber(paste.expire) or os.time()+defaultLifetime, os.time()+maxLifetime)
 	paste.burnOnRead = paste.burnOnRead == true
-	paste.senderId = paste.senderId or request.client:getpeername() or "0.0.0.0"
+	paste.senderId = paste.senderId or getClientId(request) or "unknown"
 	paste.syntax = (paste.syntax or "text"):lower():match("[a-z]*")
 	paste.data = tostring(paste.data)
 	data[name] = paste
 	return name, data[name]
 end
-local pygmentsStyle, extraStyle = "monokai", "*{color:#F8F8F2;background-color:#272822;margin:0px;}pre{color:#8D8D8A;}" -- pygments style name, extra css for highlighted blocks (also aply if no pygments)
+local pygmentsStyle, extraStyle = config.pygmentsStyle or "monokai", config.extraStyle or "*{color:#F8F8F2;background-color:#272822;margin:0px;}pre{color:#8D8D8A;}" -- pygments style name, extra css for highlighted blocks (also aply if no pygments)
 local function highlight(paste, forceLexer) -- Syntax highlighting; should returns the code block, style and everything included
 	local source = assert(io.open("pygmentize.tmp", "w")) -- Lua can't at the same time write an read from a command, so we need to put one in a file
 	source:write(paste.data) source:close()
@@ -220,11 +220,10 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	["/([^/]*)"] = function(request, name)
 		if forbiddenName[name] then return end
 		if request.method == "POST" and request.post.data then
-			name = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime/3600)*3600, burnOnRead = request.post.burnOnRead == "on", data = request.post.data }, request)
+			name = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime/3600)*3600, burnOnRead = request.post.burnOnRead == "on", syntax = request.post.syntax, data = request.post.data }, request)
 			return { "303 See Other", {["Location"] = "/"..name}, "" }
 		end
-		return { "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><title>vrel</title></head>
+		return { "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset="utf-8"/><title>vrel</title></head>
 <body>]]..(#name == 0 and [[
 	<style>
 		* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
@@ -233,22 +232,22 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 		#topbar { margin: 0.45em 0.2em; height: 1.85em; background-color: #000000; }
 		#topbar #controls { padding: 0.5em; }
 		#topbar input { height: 2em; text-align: center; background-color: #383832; }
-		#topbar input[name=lifetime] { width: 5em; }
-		#topbar input[name=burnOnRead] { vertical-align: middle; }
+		#topbar input[name=lifetime] { width: 5em; } #topbar input[name=burnOnRead] { vertical-align: middle; }
+		#topbar input[name=syntax] { width: 5.5em; }
 		#topbar input[type=submit] { cursor: pointer; width: 10em; }
 		#topbar #vrel { font-size: 1.5em; float: right; }
 	</style>
 	<form method="POST" action="/">
 		<div id="topbar"><span id="controls">expires in <input name="lifetime" type="number" min="1" max="]]..math.floor(maxLifetime/3600)..[[" value="]]..math.floor(defaultLifetime/3600)..
-		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
-		<textarea name="data" required=true></textarea>
-	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found"}, name:lower():match("%.([a-z]+)$")))..[[
+		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input name="syntax" type="text" placeholder="syntax"/> <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
+		<textarea name="data" required=true autofocus placeholder="paste your text here"></textarea>
+	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found",syntax="text"}, name:lower():match("%.([a-z]+)$")))..[[
 </body></html>]] }
 	end,
 	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
 	["/p"] = function(request)
 		if request.method == "POST" and request.post.data then
-			local name, paste = post({ lifetime = tonumber(request.post.lifetime) or defaultLifetime, burnOnRead = request.post.burnOnRead == "on", data = request.post.data }, request)
+			local name, paste = post({ lifetime = tonumber(request.post.lifetime) or defaultLifetime, burnOnRead = request.post.burnOnRead == "on", syntax = request.post.syntax, data = request.post.data }, request)
 			return { "200 OK", {["Content-Type"] = "text/json"}, "{\"name\":\""..name.."\",\"lifetime\":"..paste.expire-os.time()..",\"burnOnRead\":"..tostring(paste.burnOnRead).."}\n" }
 		end
 	end

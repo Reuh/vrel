@@ -17,6 +17,10 @@ return {
 	defaultLifetime = 86400, -- 1 day
 	-- Maximal size of a request/paste
 	requestMaxDataSize = 15728640, -- 15MB
+	-- Pygments style name
+	pygmentsStyle = "monokai",
+	-- Extra CSS applied to syntax-highlighted blocks (with and without Pygments)
+	extraStyle = "*{color:#F8F8F2;background-color:#272822;margin:0px;}pre{color:#8D8D8A;}",
 	-- Request timeout
 	timeout = 1, -- 1 second
 	-- Debug mode
