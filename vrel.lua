@@ -242,10 +242,10 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 			         ([[<!DOCTYPE html><html><head><meta charset=utf-8><title>%s - vrel</title><style>%s</style></head><body>%s</body></html>]]):format(name, highlight(paste, name:lower():match("%.([a-z]+)$"))) }
 		end
 	end,
-	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text; charset=utf-8"}, d.data } or nil end,
+	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text/plain; charset=utf-8"}, d.data } or nil end,
 	["/p"] = function(request)
 		if request.method == "POST" and request.post.data then
-			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 1 or 1), burnOnRead = request.post.burnOnRead == "on",
+			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 3600 or 1), burnOnRead = request.post.burnOnRead == "on",
 			                           syntax = (request.post.web and request.post.syntax == "" and "text") or request.post.syntax, data = request.post.data }, request)
 			return request.post.web and { "303 See Other", {["Location"] = "/"..name}, "" } or
 			       { "200 OK", {["Content-Type"] = "text/json; charset=utf-8"}, ([[{"name":"%s","lifetime":%s,"burnOnRead":%s,"syntax":"%s"}]]):format(name, paste.expire-os.time(), paste.burnOnRead,paste.syntax) }
