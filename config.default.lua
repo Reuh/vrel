@@ -24,5 +24,7 @@ return {
 	-- Request timeout
 	timeout = 1, -- 1 second
 	-- Debug mode
-	debug = false
+	debug = false,
+	-- Time interval to remove expired webserver cache entries (seconds)
+	cacheCleanInterval = 3600 -- 1 hour
 }

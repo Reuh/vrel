@@ -1,5 +1,5 @@
 #!/bin/lua
---- vrel v0.1.5: online paste service, in 256 lines of Lua (max line lenght = 256 but we shouldn't go this far if not needed).
+--- vrel v0.1.5: online paste service, in 256 lines of Lua (max line lenght = 256).
 -- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting. If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
 math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
@@ -33,7 +33,7 @@ httpd = {
 			local message = client:receive("*l")
 			table.insert(lines, message)
 		until not message or #message == 0
-		-- Parse fisrt line (method, path and HTTP version)
+		-- Parse first line (method, path and HTTP version)
 		request.method, request.path, request.version = lines[1]:match("(%S*)%s(%S*)%s(%S*)")
 		if not request.method then return nil, "malformed request" end
 		-- Parse headers
@@ -47,7 +47,7 @@ httpd = {
 		if request.headers["Expect"] == "100-continue" then client:send("HTTP/1.1 100 Continue\r\n") client:receive("*l") end -- "Expect: 100-continue" basic support
 		-- Get body from socket
 		if request.headers["Content-Length"] then
-			if tonumber(request.headers["Content-Length"]) > requestMaxDataSize then return nil, "body too big (>15Mo)" end -- size limitation
+			if tonumber(request.headers["Content-Length"]) > requestMaxDataSize then return nil, ("body too big (>%sB)"):format(requestMaxDataSize) end -- size limitation
 			request.body = client:receive(request.headers["Content-Length"])
 			if request.method == "POST" then request.post = httpd.parseArgs(request.body) end -- POST args
 		end
@@ -62,13 +62,14 @@ httpd = {
 		httpd.log("%s < HTTP/1.1 %s", httpd.peername(client), code) -- Logging
 		client:send(text)
 	end,
-	-- Start the server with the pages{pathMatch=function(request,captures)return{respCode,headers,body}end,pathMatch2={code,headers,body},...} and errorPages{404=sameAsPages,...}
-	-- Optional table: options{debug=enable debug mode, timeout=client timeout in seconds before assuming he ran away (full sync server yeah)}
+	-- Start the server with the pages{pathMatch=function(request,captures)return{[cache=cacheDuration,]respCode,headers,body}end,pathMatch2={code,headers,body},...} and errorPages{404=sameAsPages,...}
+	-- Optional table: options{debug=enable debug mode, timeout=client timeout in seconds before assuming he ran away (full sync server yeah), cacheCleanInterval = remove expired cache entries each interval of time (seconds)}
 	start = function(address, port, pages, errorPages, options)
-		options = options or { debug = false, timeout = 1 }
+		options = options or { debug = false, timeout = 1, cacheCleanInterval = 3600 }
 		-- Start server
 		local socket, url = require("socket"), require("socket.url")
 		local server, running = socket.bind(address, port), true
+		local cache, nextCacheClean = {}, os.time() + (options.cacheCleanInterval or 3600)
 		httpd.log("HTTP server started on %s", ("%s:%s"):format(server:getsockname()))
 		-- Debug mode
 		if options.debug then
@@ -97,12 +98,14 @@ httpd = {
 				local success, err = xpcall(function()
 					local req, err = httpd.getRequest(client)
 					if req then
+						if cache[req.path] and cache[req.path].expire >= os.time() then httpd.sendResponse(client, unpack(cache[req.path].response)) return end
 						local responded = false -- the request has been handled
+						local shortPath = url.parse(req.path).path -- path without GET arguments and stuff like that
 						for path, page in pairs(pages) do
-							local shortPath = url.parse(req.path).path -- path without GET arguments and stuff like that
 							if shortPath:match("^"..path.."$") then -- strict match
 								local response = type(page) == "table" and page or page(req, req.path:match("^"..path.."$"))
 								if response then
+									if response.cache then cache[req.path] = { expire = os.time() + response.cache, response = response } end
 									httpd.sendResponse(client, unpack(response))
 									responded = true
 									break
@@ -124,6 +127,11 @@ httpd = {
 				end
 				client:close()
 			end
+			local time = os.time()
+			if nextCacheClean < time then
+				for path, req in pairs(cache) do if req.expire < time then cache[path] = nil end end
+				nextCacheClean = time + (options.cacheCleanInterval or 3600)
+			end
 		end
 		server:close()
 		if options.debug then os.execute((arg[-1] and (arg[-1].." ") or "")..arg[0].." "..table.concat(arg, " ")) end -- Restart server
@@ -144,16 +152,11 @@ if sqliteAvailable then httpd.log("Using SQlite3 storage backend") -- SQlite bac
 		end,
 		__newindex = function(self, key, value)
 			if value ~= nil then -- data[name] = { expire = integer, burnOnRead = boolean, syntax = string, data = string }: add paste
-				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.syntax, value.data)
-				stmt:step() stmt:finalize()
-			else -- data[name] = nil: delete paste
-				local stmt = db:prepare("DELETE FROM data WHERE name = ?") stmt:bind_values(key)
-				stmt:step() stmt:finalize()
-			end
+				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.syntax, value.data) stmt:step() stmt:finalize()
+			else local stmt = db:prepare("DELETE FROM data WHERE name = ?") stmt:bind_values(key) stmt:step() stmt:finalize() end -- data[name] = nil: delete paste
 		end,
 		__clean = function(self, time) -- clean database
-			local stmt = db:prepare("DELETE FROM data WHERE expire < ?") stmt:bind_values(time)
-			stmt:step() stmt:finalize()
+			local stmt = db:prepare("DELETE FROM data WHERE expire < ?") stmt:bind_values(time) stmt:step() stmt:finalize()
 		end,
 		__gc = function(self) db:close() end -- stop storage
 	})
@@ -203,54 +206,51 @@ local function post(paste, request) clean() -- add a paste, will check data and 
 	return name, data[name]
 end
 local pygmentsStyle, extraStyle = config.pygmentsStyle or "monokai", config.extraStyle or "*{color:#F8F8F2;background-color:#272822;margin:0px;}pre{color:#8D8D8A;}" -- pygments style name, extra css for highlighted blocks (also aply if no pygments)
-local function highlight(paste, forceLexer) -- Syntax highlighting; should returns the code block, style and everything included
+local function highlight(paste, forceLexer) -- Syntax highlighting; should returns the style CSS code and code block HTML
 	local source = assert(io.open("pygmentize.tmp", "w")) -- Lua can't at the same time write an read from a command, so we need to put one in a file
 	source:write(paste.data) source:close()
-	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..(forceLexer or paste.syntax).." pygmentize.tmp", "r"))
+	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..(forceLexer or paste.syntax or "text").." pygmentize.tmp", "r"))
 	local out = assert(pygments:read("*a")) pygments:close()
 	if #out > 0 then -- if pygments available and available lexer (returned something)
 		local style = assert(io.popen("pygmentize -f html -S "..pygmentsStyle, "r")) -- get style data
-		out = out.."<style>"..extraStyle..assert(style:read("*a")).."</style>" style:close()
-		return out
-	-- no highlighter available, put in <pre><code> and escape
-	else return "<style>"..extraStyle.."</style><pre><code>"..paste.data:gsub("([\"&<>])",{["\""]="&quot;",["&"]="&amp;",["<"]="&lt;",[">"]="&gt;"}).."</code></pre>" end
+		local outstyle = extraStyle..assert(style:read("*a")) style:close()
+		return outstyle, out
+	else return extraStyle, "<pre><code>"..paste.data:gsub("([\"&<>])",{["\""]="&quot;",["&"]="&amp;",["<"]="&lt;",[">"]="&gt;"}).."</code></pre>" end -- no highlighter available, put in <pre><code> and escape
 end
 -- Start!
 httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	["/([^/]*)"] = function(request, name)
 		if forbiddenName[name] then return end
-		if request.method == "POST" and request.post.data then
-			name = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime/3600)*3600, burnOnRead = request.post.burnOnRead == "on", syntax = request.post.syntax, data = request.post.data }, request)
-			return { "303 See Other", {["Location"] = "/"..name}, "" }
+		if #name == 0 then return { cache = 3600, "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset=utf-8><title>vrel</title><style>
+	* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
+	form * { background-color: #272822; }
+	textarea[name=data] { resize: none; position: fixed; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
+	#topbar { margin: 0.45em 0.2em; height: 1.85em; background-color: #000000; }
+	#topbar #controls { padding: 0.5em; }
+	#topbar input { height: 2em; text-align: center; background-color: #383832; }
+	#topbar input[name=lifetime] { width: 5em; } #topbar input[name=burnOnRead] { vertical-align: middle; }
+	#topbar input[name=syntax] { width: 5.5em; }
+	#topbar input[type=submit] { cursor: pointer; width: 10em; }
+	#topbar #vrel { font-size: 1.5em; float: right; }
+</style></head><body>
+	<form method=POST action=/p><input name=web type=hidden value=on>
+		<div id=topbar><span id=controls>expires in <input name=lifetime type=number min=1 max=]]..math.floor(maxLifetime/3600)..[[ value=]]..math.floor(defaultLifetime/3600)..
+		[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> <input type=submit value=post></span><a id=vrel href=/>vrel</a></div>
+		<textarea name=data required autofocus placeholder="paste your text here"></textarea>
+</form></body></html>]] }
+		else local paste = get(name:match("^[^.]+"), request) or { data = "paste not found", syntax = "text", expire = os.time() }
+			return { cache = not paste.burnOnRead and paste.expire - os.time(), "200 OK", {["Content-Type"] = "text/html"},
+			         ([[<!DOCTYPE html><html><head><meta charset=utf-8><title>%s - vrel</title><style>%s</style></head><body>%s</body></html>]]):format(name, highlight(paste, name:lower():match("%.([a-z]+)$"))) }
 		end
-		return { "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset="utf-8"/><title>vrel</title></head>
-<body>]]..(#name == 0 and [[
-	<style>
-		* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
-		form * { background-color: #272822; }
-		textarea[name=data] { resize: none; position: fixed; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
-		#topbar { margin: 0.45em 0.2em; height: 1.85em; background-color: #000000; }
-		#topbar #controls { padding: 0.5em; }
-		#topbar input { height: 2em; text-align: center; background-color: #383832; }
-		#topbar input[name=lifetime] { width: 5em; } #topbar input[name=burnOnRead] { vertical-align: middle; }
-		#topbar input[name=syntax] { width: 5.5em; }
-		#topbar input[type=submit] { cursor: pointer; width: 10em; }
-		#topbar #vrel { font-size: 1.5em; float: right; }
-	</style>
-	<form method="POST" action="/">
-		<div id="topbar"><span id="controls">expires in <input name="lifetime" type="number" min="1" max="]]..math.floor(maxLifetime/3600)..[[" value="]]..math.floor(defaultLifetime/3600)..
-		[["/> hours (<input name="burnOnRead" type="checkbox"/>burn on read) <input name="syntax" type="text" placeholder="syntax"/> <input type="submit" value="post"/></span><a id="vrel" href="/">vrel</a></div>
-		<textarea name="data" required=true autofocus placeholder="paste your text here"></textarea>
-	</form>]] or highlight(get(name:match("^[^.]+"), request) or {data="paste not found",syntax="text"}, name:lower():match("%.([a-z]+)$")))..[[
-</body></html>]] }
 	end,
-	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
+	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = d.expire - os.time(), "200 OK", {["Content-Type"] = "text"}, d.data } or nil end,
 	["/p"] = function(request)
 		if request.method == "POST" and request.post.data then
-			local name, paste = post({ lifetime = tonumber(request.post.lifetime) or defaultLifetime, burnOnRead = request.post.burnOnRead == "on", syntax = request.post.syntax, data = request.post.data }, request)
-			return { "200 OK", {["Content-Type"] = "text/json"}, "{\"name\":\""..name.."\",\"lifetime\":"..paste.expire-os.time()..",\"burnOnRead\":"..tostring(paste.burnOnRead).."}\n" }
+			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 1 or 1), burnOnRead = request.post.burnOnRead == "on",
+			                           syntax = (request.post.web and request.post.syntax == "" and "text") or request.post.syntax, data = request.post.data }, request)
+			return request.post.web and {"303 See Other",{["Location"] = "/"..name},""} or {"200 OK", {["Content-Type"]="text/json"},([[{"name":"%s","lifetime":%s,"burnOnRead":%s,"syntax":"%s"}]]):format(name,paste.expire-os.time(),paste.burnOnRead,paste.syntax)}
 		end
 	end
 }, { -- Error pages
-	["404"] = { "404", {["Content-Type"] = "text/json"}, "{\"error\":\"page not found\"}\n" }, ["500"] = { "500", {["Content-Type"] = "text/json"}, "{\"error\":\"internal server error\"}\n" }
-}, { timeout = config.timeout or 1, debug = config.debug or false })
+	["404"] = { "404", {["Content-Type"] = "text/json"}, [[{"error":"page not found"}]] }, ["500"] = { "500", {["Content-Type"] = "text/json"}, [[{"error":"internal server error"}]] }
+}, { timeout = config.timeout or 1, debug = config.debug or false, cacheCleanInterval = config.cacheCleanInterval or 3600 })
