@@ -16,7 +16,7 @@ return {
 	-- Default lifetime of a paste in the web interface
 	defaultLifetime = 86400, -- 1 day
 	-- Maximal size of a request/paste
-	requestMaxDataSize = 15728640, -- 15MB
+	requestMaxDataSize = 10485760, -- 10MB
 	-- Pygments style name
 	pygmentsStyle = "monokai",
 	-- Extra CSS applied to syntax-highlighted blocks (with and without Pygments)
@@ -25,6 +25,8 @@ return {
 	timeout = 1, -- 1 second
 	-- Debug mode
 	debug = false,
-	-- Time interval to remove expired webserver cache entries (seconds)
+	-- Cached pages lifetime
+	cacheDuration = 3600, -- 1 hour
+	-- Time interval to remove expired cache entries (seconds)
 	cacheCleanInterval = 3600 -- 1 hour
 }

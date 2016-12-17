@@ -4,7 +4,7 @@
 math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
 -- Basic HTTP server --
-local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 15728640 -- max post/paste data size (bytes) (15MB)
+local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 10485760 -- max post/paste data size (bytes) (10MB)
 httpd = {
 	log = function(str, ...) print("["..os.date().."] "..str:format(...)) end, -- log a message (str:format(...))
 	peername = function(client) return ("%s:%s"):format(client:getpeername()) end, -- returns a nice display name for the client (address:port)
@@ -221,7 +221,7 @@ end
 httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	["/([^/]*)"] = function(request, name)
 		if forbiddenName[name] then return end
-		if #name == 0 then return { cache = 3600, "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset=utf-8><title>vrel</title><style>
+		if #name == 0 then return { cache = config.cacheDuration or 3600, "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset=utf-8><title>vrel</title><style>
 	* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
 	form * { background-color: #272822; }
 	textarea[name=data] { resize: none; position: fixed; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
@@ -238,11 +238,11 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	<textarea name=data required autofocus placeholder="paste your text here"></textarea>
 </form></body></html>]] }
 		else local paste = get(name:match("^[^.]+"), request) or { data = "paste not found", syntax = "text", expire = os.time() }
-			return { cache = not paste.burnOnRead and paste.expire - os.time(), "200 OK", {["Content-Type"] = "text/html"},
+			return { cache = not paste.burnOnRead and math.min(paste.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text/html"},
 			         ([[<!DOCTYPE html><html><head><meta charset=utf-8><title>%s - vrel</title><style>%s</style></head><body>%s</body></html>]]):format(name, highlight(paste, name:lower():match("%.([a-z]+)$"))) }
 		end
 	end,
-	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = d.expire - os.time(), "200 OK", {["Content-Type"] = "text; charset=utf-8"}, d.data } or nil end,
+	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text; charset=utf-8"}, d.data } or nil end,
 	["/p"] = function(request)
 		if request.method == "POST" and request.post.data then
 			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 1 or 1), burnOnRead = request.post.burnOnRead == "on",
