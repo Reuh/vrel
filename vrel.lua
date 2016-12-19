@@ -4,7 +4,7 @@
 math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
 -- Basic HTTP 1.0 server --
-local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 10485760 -- max post/paste data size (bytes) (10MB)
+local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 5242880 -- max post/paste data size (bytes) (5MB)
 httpd = {
 	log = function(str, ...) print("["..os.date().."] "..str:format(...)) end, -- log a message (str:format(...))
 	peername = function(client) return ("%s:%s"):format(client:getpeername()) end, -- returns a nice display name for the client (address:port)
@@ -25,7 +25,7 @@ httpd = {
 			version = "HTTP/1.0", -- HTTP version string
 			headers = {}, -- headers table: {headerName=headerValue,...} (strings)
 			body = "", -- request body
-			post = {}, -- POST args {argName=argValue,...} (strings)
+			post = { mimetype = {} }, -- POST args {argName=argValue,...,mimetype={argName=argMimeType}} (strings)
 			get = {} -- GET args {argName=argValue,...} (strings)
 		}
 		local lines = {} -- Headers
@@ -48,11 +48,9 @@ httpd = {
 				if request.headers["Content-Type"]:match("multipart%/form%-data") then
 					local boundary = request.headers["Content-Type"]:match("multipart%/form%-data%; boundary%=([^;]+)"):gsub("%p", "%%%1")
 					for part in request.body:match("%-%-"..boundary.."(.*)"):gmatch("\r\n(.-)\r\n%-%-"..boundary) do
-						for l in part:gmatch("(.-)\r\n") do -- parse part headers
-							local name, value = l:match("^(.-)%:%s(.*)$")
-							if name == "Content-Disposition" then request.post[value:match("form%-data; name%=\"([^;\"]+)\"")] = part:match("\r\n\r\n(.*)") break
-							elseif name == nil or #l == 0 then break end
-						end
+						local headers, content = part:match("(.-\r\n)\r\n(.*)")
+						local name = headers:match("Content%-Disposition:%sform%-data; name%=\"([^\";\r]-)\"")
+						request.post[name], request.post.mimetype[name] = content, headers:match("Content%-Type:%s(.-)\r\n")
 					end
 				else request.post = httpd.parseUrlEncoded(request.body) end -- application/x-www-form-urlencoded
 			end
@@ -147,16 +145,17 @@ local data = {} -- { ["name"] = { expire = os.time()+lifetime, burnOnRead = fals
 local sqliteAvailable, sqlite3 = pcall(require, "lsqlite3")
 if sqliteAvailable then httpd.log("Using SQlite3 storage backend") -- SQlite backend
 	local db = sqlite3.open("database.sqlite3")
-	db:exec("CREATE TABLE IF NOT EXISTS data (name STRING PRIMARY KEY NOT NULL UNIQUE, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL DEFAULT 0, senderId STRING NOT NULL, syntax STRING NOT NULL DEFAULT 'text', data STRING NOT NULL)")
+	db:exec("CREATE TABLE IF NOT EXISTS data (name TEXT PRIMARY KEY NOT NULL UNIQUE, expire INTEGER NOT NULL, burnOnRead INTEGER NOT NULL DEFAULT 0, senderId TEXT NOT NULL, syntax TEXT NOT NULL DEFAULT 'text', "..
+		"mimetype TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8', data BLOB NOT NULL)")
 	setmetatable(data, {
 		__index = function(self, key) -- data[name]: get paste { expire = integer, burnOnRead = boolean, data = string }
-			local stmt = db:prepare("SELECT expire, burnOnRead, senderId, syntax, data FROM data WHERE name = ?") stmt:bind_values(key)
+			local stmt = db:prepare("SELECT expire, burnOnRead, senderId, syntax, mimetype, data FROM data WHERE name = ?") stmt:bind_values(key)
 			local r for row in stmt:nrows() do r = row r.burnOnRead = r.burnOnRead == 1 break end stmt:finalize()
 			return r
 		end,
 		__newindex = function(self, key, value)
 			if value ~= nil then -- data[name] = { expire = integer, burnOnRead = boolean, syntax = string, data = string }: add paste
-				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.syntax, value.data) stmt:step() stmt:finalize()
+				local stmt = db:prepare("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?, ?)") stmt:bind_values(key, value.expire, value.burnOnRead, value.senderId, value.syntax, value.mimetype, value.data) stmt:step() stmt:finalize()
 			else local stmt = db:prepare("DELETE FROM data WHERE name = ?") stmt:bind_values(key) stmt:step() stmt:finalize() end -- data[name] = nil: delete paste
 		end,
 		__clean = function(self, time) -- clean database
@@ -168,7 +167,7 @@ else httpd.log("Using in-memory storage backend") -- In-memory (table) backend
 	setmetatable(data, { __clean = function(self, time) for name, d in pairs(self) do if d.expire < time then self[name] = nil end end end })
 end
 -- Helpers functions
-local forbiddenName = { ["g"] = true, ["p"] = true }
+local forbiddenName = { ["g"] = true, ["t"] = true, ["p"] = true }
 local function generateName(size) -- generate a paste name. If size ~= nil, will generate a random ID of this lenght.
 	local name = ""
 	repeat
@@ -199,9 +198,8 @@ local function post(paste, request) clean() -- add a paste, will check data and 
 	local name = generateName()
 	if paste.lifetime then paste.expire = os.time() + (tonumber(paste.lifetime) or defaultLifetime) end
 	paste.expire = math.min(tonumber(paste.expire) or os.time()+defaultLifetime, os.time()+maxLifetime)
-	paste.burnOnRead = paste.burnOnRead == true
-	paste.senderId = paste.senderId or getClientId(request) or "unknown"
-	paste.syntax = (paste.syntax or "text"):lower():match("[a-z]*")
+	paste.burnOnRead, paste.senderId = paste.burnOnRead == true, paste.senderId or getClientId(request) or "unknown"
+	paste.syntax, paste.mimetype = (paste.syntax or (paste.mimetype or ""):match("text%/x?%-?(%a+)") or "text"):lower():match("[a-z]*"), paste.mimetype or "text/plain; charset=utf-8"
 	paste.data = tostring(paste.data)
 	data[name] = paste
 	return name, data[name]
@@ -225,7 +223,7 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 		if #name == 0 then return { cache = config.cacheDuration or 3600, "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset=utf-8><title>vrel</title><style>
 	* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
 	form * { background-color: #272822; }
-	textarea[name=data] { resize: none; position: fixed; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
+	textarea[name=data] { resize: none; position: absolute; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
 	#topbar { margin: 0.45em 0.2em; height: 1.85em; background-color: #000000; }
 	#topbar #controls { padding: 0.5em; }
 	#topbar input { height: 2em; text-align: center; background-color: #383832; }
@@ -233,23 +231,25 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	#topbar input[name=syntax] { width: 5.5em; }
 	#topbar input[type=submit] { cursor: pointer; width: 10em; }
 	#topbar #vrel { font-size: 1.5em; float: right; }
-</style></head><body><form method=POST action=/p><input name=web type=hidden value=on>
+</style></head><body><form method=POST action=/p enctype=multipart/form-data><input name=web type=hidden value=on>
 	<div id=topbar><span id=controls>expires in <input name=lifetime type=number min=1 max=]]..math.floor(maxLifetime/3600)..[[ value=]]..math.floor(defaultLifetime/3600)..
-	[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> <input type=submit value=post></span><a id=vrel href=/>vrel</a></div>
-	<textarea name=data required autofocus placeholder="paste your text here"></textarea>
+	[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> (or send a file <input name=file type=file>) <input type=submit value=post></span><a id=vrel href=/>vrel</a></div>
+	<textarea name=data autofocus placeholder="paste your text here"></textarea>
 </form></body></html>]] }
 		else local paste = get(name:match("^[^.]+"), request) or { data = "paste not found", syntax = "text", expire = os.time() }
 			return { cache = not paste.burnOnRead and math.min(paste.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text/html"},
 			         ([[<!DOCTYPE html><html><head><meta charset=utf-8><title>%s - vrel</title><style>%s</style></head><body>%s</body></html>]]):format(name, highlight(paste, name:lower():match("%.([a-z]+)$"))) }
 		end
 	end,
-	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text/plain; charset=utf-8"}, d.data } or nil end,
+	["/g/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = d.mimetype}, d.data } or nil end,
+	["/t/(.+)"] = function(request, name) local d = get(name, request) return d and { cache = math.min(d.expire - os.time(), config.cacheDuration or 3600), "200 OK", {["Content-Type"] = "text/plain; charset=utf-8"}, d.data } or nil end,
 	["/p"] = function(request)
+		if request.post.web and #(request.post.file or "") > #(request.post.data or "") then request.post.data, request.post.mimetype.data = request.post.file, request.post.mimetype.file end
 		if request.method == "POST" and request.post.data then
 			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 3600 or 1), burnOnRead = request.post.burnOnRead == "on",
-			                           syntax = (request.post.web and request.post.syntax == "" and "text") or request.post.syntax, data = request.post.data }, request)
-			return request.post.web and { "303 See Other", {["Location"] = "/"..name}, "" } or
-			       { "200 OK", {["Content-Type"] = "text/json; charset=utf-8"}, ([[{"name":%q,"lifetime":%q,"burnOnRead":%s,"syntax":%q}]]):format(name, paste.expire-os.time(), tostring(paste.burnOnRead), paste.syntax) }
+				syntax = not (request.post.web and request.post.syntax == "") and request.post.syntax or nil, mimetype = request.post.mimetype.data, data = request.post.data }, request)
+			return request.post.web and { "303 See Other", {["Location"] = (paste.mimetype:match("text") and "/" or "/g/")..name}, "" } or
+				{ "200 OK", {["Content-Type"] = "text/json; charset=utf-8"}, ([[{"name":%q,"lifetime":%q,"burnOnRead":%s,"syntax":%q,"mimetype":%q}]]):format(name, paste.expire-os.time(), tostring(paste.burnOnRead), paste.syntax, paste.mimetype) }
 		end
 	end
 }, { ["404"] = { "404", {["Content-Type"] = "text/json; charset=utf-8"}, [[{"error":"page not found"}]] }, ["500"] = { "500", {["Content-Type"] = "text/json; charset=utf-8"}, [[{"error":"internal server error"}]] } -- Error pages
