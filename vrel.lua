@@ -249,7 +249,7 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 			local name, paste = post({ lifetime = (tonumber(request.post.lifetime) or defaultLifetime)*(request.post.web and 3600 or 1), burnOnRead = request.post.burnOnRead == "on",
 			                           syntax = (request.post.web and request.post.syntax == "" and "text") or request.post.syntax, data = request.post.data }, request)
 			return request.post.web and { "303 See Other", {["Location"] = "/"..name}, "" } or
-			       { "200 OK", {["Content-Type"] = "text/json; charset=utf-8"}, ([[{"name":%q,"lifetime":%q,"burnOnRead":%q,"syntax":%q}]]):format(name, paste.expire-os.time(), paste.burnOnRead, paste.syntax) }
+			       { "200 OK", {["Content-Type"] = "text/json; charset=utf-8"}, ([[{"name":%q,"lifetime":%q,"burnOnRead":%s,"syntax":%q}]]):format(name, paste.expire-os.time(), tostring(paste.burnOnRead), paste.syntax) }
 		end
 	end
 }, { ["404"] = { "404", {["Content-Type"] = "text/json; charset=utf-8"}, [[{"error":"page not found"}]] }, ["500"] = { "500", {["Content-Type"] = "text/json; charset=utf-8"}, [[{"error":"internal server error"}]] } -- Error pages
