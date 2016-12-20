@@ -1,0 +1,55 @@
+#!/bin/sh
+
+usage="Usage: $0 [-l DURATION] [-b] [-s SYNTAX] [-t TYPE] FILE ...
+Options:
+ -l DURATION  data lifetime in seconds
+ -b           enable burn on read
+ -s SYNTAX    syntax highliter
+ -t TYPE      file mimetype"
+
+vrel="https://vrel.tk"
+
+cmd="curl -0"
+
+while getopts "l:bs:t:" opt
+do
+	case "$opt" in
+		l)
+			cmd="$cmd -F lifetime=$OPTARG"
+			;;
+  		b)
+			cmd="$cmd -F burnOnRead=on"
+			;;
+		s)
+			cmd="$cmd -F syntax=$OPTARG"
+			;;
+		t)
+			mimetype="$OPTARG"
+			;;
+		*)
+			echo "$usage"
+			exit 1
+			;;
+	esac
+done
+
+shift $((OPTIND-1))
+
+if [ -z "$@" ]
+then
+	echo "$usage"
+	exit 1
+fi
+
+for file in "$@"
+do
+	echo "> $file"
+	if [ "$mimetype" ]
+	then
+		$cmd -F data="@$file;type=$mimetype" $vrel/p
+	else
+		$cmd -F data="@$file" $vrel/p
+	fi
+done
+
+exit 0
