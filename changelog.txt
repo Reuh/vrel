@@ -1,3 +1,9 @@
+vrel 0.1.6:
+	- Reduced max paste size (10MB -> 5MB).
+	- Switched to HTTP 1.0
+	- Added mimetype saving in /p/ & restitution in /g/
+	- Added /t/ for raw text
+	- Added file upload
 vrel 0.1.5:
 	- Reduced max paste size (15MB -> 10MB).
 	- Doubled the default max lifetime (3 months -> 6 months).

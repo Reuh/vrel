@@ -1,5 +1,5 @@
 #!/bin/lua
---- vrel v0.1.5: online paste service, in 256 lines of Lua (max line lenght = 256).
+--- vrel v0.1.6: online paste service, in 256 lines of Lua (max line lenght = 256).
 -- This module requires LuaSocket 2.0.2, and debug mode requires LuaFileSystem 1.6.3. Install pygmentize for the optional syntax highlighting. If you want persistance for paste storage, install lsqlite3. vrel should work with Lua 5.1 to 5.3.
 math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
