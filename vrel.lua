@@ -233,7 +233,7 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	#topbar #vrel { font-size: 1.5em; float: right; }
 </style></head><body><form method=POST action=/p enctype=multipart/form-data><input name=web type=hidden value=on>
 	<div id=topbar><span id=controls>expires in <input name=lifetime type=number min=1 max=]]..math.floor(maxLifetime/3600)..[[ value=]]..math.floor(defaultLifetime/3600)..
-	[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> (or send a file <input name=file type=file>) <input type=submit value=post></span><a id=vrel href=/>vrel</a></div>
+	[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> (or send a file <input name=file type=file>) <input type=submit value=post></span><a id=vrel href=/ title=0.1.6>vrel</a></div>
 	<textarea name=data autofocus placeholder="paste your text here"></textarea>
 </form></body></html>]] }
 		else local paste = get(name:match("^[^.]+"), request) or { data = "paste not found", syntax = "text", expire = os.time() }
