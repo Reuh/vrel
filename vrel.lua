@@ -221,17 +221,17 @@ httpd.start(config.address or "*", config.port or 8155, { -- Pages
 	["/([^/]*)"] = function(request, name)
 		if forbiddenName[name] then return end
 		if #name == 0 then return { cache = config.cacheDuration or 3600, "200 OK", {["Content-Type"] = "text/html"}, [[<!DOCTYPE html><html><head><meta charset=utf-8><title>vrel</title><style>
-	* { padding: 0em; margin: 0em; color: #F8F8F2; background-color: #000000; font-size: 0.95em; font-family: mono, sans; border-style: none; }
+	* { padding: 0; margin: 0; color: #F8F8F2; background-color: #000000; font-size: 95%; font-family: mono, sans; border-style: none; }
 	form * { background-color: #272822; }
-	textarea[name=data] { resize: none; position: absolute; width: 100%; height: calc(100% - 2.75em); /* 2.75em = textsize + 2*margin topbar */ }
-	#topbar { margin: 0.45em 0.2em; height: 1.85em; background-color: #000000; }
-	#topbar #controls { padding: 0.5em; }
-	#topbar input { height: 2em; text-align: center; background-color: #383832; }
-	#topbar input[name=lifetime] { width: 5em; } #topbar input[name=burnOnRead] { vertical-align: middle; }
-	#topbar input[name=syntax] { width: 5.5em; }
-	#topbar input[type=submit] { cursor: pointer; width: 10em; }
-	#topbar #vrel { font-size: 1.5em; float: right; }
-</style></head><body><form method=POST action=/p enctype=multipart/form-data><input name=web type=hidden value=on>
+	textarea[name=data] { resize: none; position: absolute; width: 100%; height: calc(100% - 2.7rem); /* 2.7rem = textsize + 2*margin topbar */ }
+	#topbar { margin: 0.35rem 0.15rem; background-color: #000000; }
+	#topbar #controls { padding: 0.4rem; }
+	#topbar input { height: 1.7rem; text-align: center; background-color: #383832; }
+	#topbar input[name=lifetime] { width: 3.5rem; } #topbar input[name=burnOnRead] { vertical-align: middle; }
+	#topbar input[name=syntax] { width: 4.7rem; }
+	#topbar input[type=submit] { cursor: pointer; width: 8rem; }
+	#topbar #vrel { font-size: 1.4rem; float: right; }
+</style><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><form method=POST action=/p enctype=multipart/form-data><input name=web type=hidden value=on>
 	<div id=topbar><span id=controls>expires in <input name=lifetime type=number min=1 max=]]..math.floor(maxLifetime/3600)..[[ value=]]..math.floor(defaultLifetime/3600)..
 	[[> hours (<input name=burnOnRead type=checkbox>burn on read) <input name=syntax type=text placeholder=syntax> (or send a file <input name=file type=file>) <input type=submit value=post></span><a id=vrel href=/ title=0.1.6>vrel</a></div>
 	<textarea name=data autofocus placeholder="paste your text here"></textarea>
