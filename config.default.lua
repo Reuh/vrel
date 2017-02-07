@@ -28,5 +28,7 @@ return {
 	-- Cached pages lifetime
 	cacheDuration = 3600, -- 1 hour
 	-- Time interval to remove expired cache entries (seconds)
-	cacheCleanInterval = 3600 -- 1 hour
+	cacheCleanInterval = 3600, -- 1 hour
+	-- Tile link location (the big "vrel" on the top right of the page)
+	titleLink = "/"
 }
