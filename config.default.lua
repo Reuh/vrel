@@ -16,7 +16,7 @@ return {
 	-- Default lifetime of a paste in the web interface
 	defaultLifetime = 86400, -- 1 day
 	-- Maximal size of a request/paste
-	requestMaxDataSize = 5242880, -- 5MB
+	requestMaxDataSize = 5242880, -- 5MiB
 	-- Pygments style name
 	pygmentsStyle = "monokai",
 	-- Extra CSS applied to syntax-highlighted blocks (with and without Pygments)
@@ -30,5 +30,7 @@ return {
 	-- Time interval to remove expired cache entries (seconds)
 	cacheCleanInterval = 3600, -- 1 hour
 	-- Tile link location (the big "vrel" on the top right of the page)
-	titleLink = "/"
+	titleLink = "/",
+	-- Max amount of bytes to retrieve at once from a client when receiving big pastes
+	maxChunkSize = 1024 -- 1 KiB
 }

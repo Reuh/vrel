@@ -4,7 +4,7 @@
 math.randomseed(os.time())
 local hasConfigFile, config = pcall(dofile, "config.lua") if not hasConfigFile then config = {} end
 -- Basic HTTP 1.0 server --
-local httpd, requestMaxDataSize = nil, config.requestMaxDataSize or 5242880 -- max post/paste data size (bytes) (5MB)
+local httpd = nil
 httpd = {
 	log = function(str, ...) print("["..os.date().."] "..str:format(...)) end, -- log a message (str:format(...))
 	peername = function(client) return ("%s:%s"):format(client:getpeername()) end, -- returns a nice display name for the client (address:port)
@@ -29,10 +29,7 @@ httpd = {
 			get = {} -- GET args {argName=argValue,...} (strings)
 		}
 		local lines = {} -- Headers
-		repeat -- Get headers data from socket
-			local message = client:receive("*l")
-			table.insert(lines, message)
-		until not message or #message == 0
+		repeat local message = client:receive("*l") table.insert(lines, message) until not message or #message == 0 -- Get headers data from socket
 		request.method, request.path, request.version = lines[1]:match("(%S*)%s(%S*)%s(%S*)") -- Parse first line (method, path and HTTP version)
 		if not request.method then return nil, "malformed request" end
 		for i=2, #lines, 1 do -- Parse headers
@@ -42,8 +39,11 @@ httpd = {
 			else return nil, "malformed headers" end
 		end
 		if request.headers["Content-Length"] then -- Get body from socket
-			if tonumber(request.headers["Content-Length"]) > requestMaxDataSize then return nil, ("body too big (>%sB)"):format(requestMaxDataSize) end -- size limitation
-			request.body = client:receive(request.headers["Content-Length"])
+			if tonumber(request.headers["Content-Length"]) > (httpd.options.requestMaxDataSize or 5242880) then return nil, ("body too big (>%sB)"):format(httpd.options.requestMaxDataSize or 5242880) end -- size limitation
+			for i=0, request.headers["Content-Length"], (httpd.options.maxChunkSize or 1024) do
+				request.body = request.body .. client:receive(math.min(httpd.options.maxChunkSize or 1024, request.headers["Content-Length"]-i))
+				coroutine.yield()
+			end
 			if request.method == "POST" then -- POST args
 				if request.headers["Content-Type"]:match("multipart%/form%-data") then
 					local boundary = request.headers["Content-Type"]:match("multipart%/form%-data%; boundary%=([^;]+)"):gsub("%p", "%%%1")
@@ -66,20 +66,20 @@ httpd = {
 		httpd.log("%s < HTTP/1.0 %s", httpd.peername(client), code) -- Logging
 	end,
 	-- Start the server with the pages{pathMatch=function(request,captures)return{[cache=cacheDuration,]respCode,headers,body}end,pathMatch2={code,headers,body},...} and errorPages{404=sameAsPages,...}
-	-- Optional table: options{debug=enable debug mode, timeout=client timeout in seconds before assuming he ran away (full sync server yeah), cacheCleanInterval = remove expired cache entries each interval of time (seconds)}
+	-- Optional table: options{debug=enable debug mode, timeout=client timeout in seconds before assuming he ran away before sending a full chunk, cacheCleanInterval = remove expired cache entries each interval of time (seconds),
+	--                         requestMaxDataSize = max post/paste data size (bytes) (5MiB), maxChunkSize = max chunk size to receive at once from a client (bytes) (1KiB)}
 	start = function(address, port, pages, errorPages, options)
-		options = options or { debug = false, timeout = 1, cacheCleanInterval = 3600 }
+		httpd.options = options or { debug = false, timeout = 1, cacheCleanInterval = 3600, requestMaxDataSize = 5242880, maxChunkSize = 1024 }
 		local socket, url = require("socket"), require("socket.url")
 		local server, running = socket.bind(address, port), true -- start server
-		local cache, nextCacheClean = {}, os.time() + (options.cacheCleanInterval or 3600)
+		local cache, nextCacheClean, requests = {}, os.time() + (httpd.options.cacheCleanInterval or 3600), {}
 		httpd.log("HTTP server started on %s", ("%s:%s"):format(server:getsockname()))
-		if options.debug then -- Debug mode
+		if httpd.options.debug then -- Debug mode
 			httpd.log("Debug mode enabled")
 			server:settimeout(1) -- Enable timeout (don't block forever so we can run debug code)
 			local realServer = server
 			server = setmetatable({}, {__index = function(_, k) return function(_, ...) return realServer[k](realServer, ...) end end}) -- Warp the server object so we can rewrite its functions
-			-- Reload file on change
-			local lfs = require("lfs")
+			local lfs = require("lfs") -- Reload file on change
 			local lastModification = lfs.attributes(arg[0]).modification -- current last modification time
 			function server:accept(...)
 				if lfs.attributes(arg[0]).modification > lastModification then
@@ -90,11 +90,12 @@ httpd = {
 			end
 		end
 		while running do -- Main loop
-			local client = server:accept() -- blocks indefinitly (nothing else to do anyway)
+			local client = server:accept() -- blocks indefinitly if nothing else to do
 			if client then
-				httpd.log("Accepted connection from client %s", httpd.peername(client))
-				client:settimeout(options.timeout or 1)
-				local success, err = xpcall(function() -- Handle request
+				server:settimeout(0)
+				table.insert(requests, { client = client, coroutine = coroutine.create(function() -- Add request handler to queue
+					httpd.log("Accepted connection from client %s", httpd.peername(client))
+					client:settimeout(httpd.options.timeout or 1)
 					local req, err = httpd.getRequest(client)
 					if req then
 						if cache[req.path] and cache[req.path].expire >= os.time() then httpd.sendResponse(client, unpack(cache[req.path].response)) return end
@@ -109,34 +110,33 @@ httpd = {
 										response[2]["Expires"] = os.date("!%a, %d %b %Y %H:%M:%S GMT", cache[req.path].expire)
 									end
 									httpd.sendResponse(client, unpack(response))
-									responded = true
-									break
+									responded = true break
 								end
 							end
 						end
-						if not responded then
-							local page = errorPages["404"] or {"404", {}, "Page not found"} -- simple default 404 page
-							httpd.sendResponse(client, unpack(type(page) == "table" and page or page(req)))
-						end
+						if not responded then httpd.sendResponse(client, unpack(type(errorPages["404"]) == "function" and errorPages["404"](req) or errorPages["404"] or {"404", {}, "Page not found"})) end
 					else httpd.log("%s - Invalid request: %s", httpd.peername(client), err) end
-				end, function(error) return error..debug.traceback("", 2) end) -- add traceback to the error message
+					client:close()
+				end)})
+			end
+			for i=#requests, 1, -1 do -- Process requests
+				local success, err = coroutine.resume(requests[i].coroutine)
 				if not success then
 					httpd.log("Internal server error: %s", err)
-					pcall(function()
-						local page = errorPages["500"] or {"500", {}, "Internal server error"} -- simple default 500 page
-						httpd.sendResponse(client, unpack(type(page) == "table" and page or page()))
-					end)
+					pcall(function() httpd.sendResponse(requests[i].client, unpack(type(errorPages["500"]) == "function" and errorPages["500"]() or errorPages["500"] or {"500", {}, "Internal server error"})) end)
+					requests[i].client:close()
 				end
-				client:close()
+				if coroutine.status(requests[i].coroutine) == "dead" then table.remove(requests, i) end
 			end
+			if #requests == 0 then server:settimeout() end
 			local time = os.time()
 			if nextCacheClean < time then -- clean cache
 				for path, req in pairs(cache) do if req.expire < time then cache[path] = nil end end
-				nextCacheClean = time + (options.cacheCleanInterval or 3600)
+				nextCacheClean = time + (httpd.options.cacheCleanInterval or 3600)
 			end
 		end
 		server:close()
-		if options.debug then os.execute((arg[-1] and (arg[-1].." ") or "")..arg[0].." "..table.concat(arg, " ")) end -- Restart server
+		if httpd.options.debug then os.execute((arg[-1] and (arg[-1].." ") or "")..arg[0].." "..table.concat(arg, " ")) end -- Restart server
 	end
 }
 -- Vrel --
