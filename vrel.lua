@@ -208,7 +208,7 @@ local pygmentsStyle, extraStyle = config.pygmentsStyle or "monokai", config.extr
 local function highlight(paste, forceLexer) -- Syntax highlighting; should returns the style CSS code and code block HTML
 	local source = assert(io.open("pygmentize.tmp", "w")) -- Lua can't at the same time write an read from a command, so we need to put one in a file
 	source:write(paste.data) source:close()
-	local pygments = assert(io.popen("pygmentize -f html -O linenos=table,style="..pygmentsStyle.." -l "..(forceLexer or paste.syntax or "text").." pygmentize.tmp", "r"))
+	local pygments = assert(io.popen("pygmentize -P encoding=utf-8 -f html -O linenos=table,style="..pygmentsStyle.." -l "..(forceLexer or paste.syntax or "text").." pygmentize.tmp", "r"))
 	local out = assert(pygments:read("*a")) pygments:close()
 	if #out > 0 then -- if pygments available and available lexer (returned something)
 		local style = assert(io.popen("pygmentize -f html -S "..pygmentsStyle, "r")) -- get style data
